@@ -83,7 +83,7 @@ CREATE TABLE Address (
 
 CREATE TABLE Sale (
 	SaleId INT IDENTITY PRIMARY KEY,
-	CustomerId INT NOT NULL,
+	CustomerId INT,
 	ShippingAddressId INT,
 	BillingAddressId INT,
 	BillingName VARCHAR(40),
@@ -305,3 +305,218 @@ INSERT INTO Returns VALUES (1, '1247', NULL, GETDATE(), CAST(NEWID() AS VARCHAR(
 INSERT INTO Returns VALUES (1, '2247', 3, GETDATE(), CAST(NEWID() AS VARCHAR(50)));
 END
 GO
+
+
+----------------------------- Question 5 ---------------------------------
+DROP PROC IF EXISTS spAllCategoriesAndProducts
+GO
+
+CREATE PROC spAllCategoriesAndProducts AS
+	-- a
+	SELECT C.CategoryId AS [Category Name], COUNT(P.SKU) AS [Product Amount]
+	FROM Category C
+		 INNER JOIN CategoryProduct CP ON C.CategoryId = CP.CategoryId
+		 INNER JOIN Product P ON P.SKU = CP.SKU
+	GROUP BY C.CategoryId
+	ORDER BY C.CategoryId
+
+	-- b
+	SELECT P.*, PI.ImageId
+	FROM Product P
+		 INNER JOIN ProductImage PI ON PI.SKU = P.SKU,
+		 (SELECT SKU, MIN(ImageOrder) AS [ImageOrder]
+		 FROM ProductImage
+		 GROUP BY SKU) AS temp
+	WHERE P.SKU = temp.SKU AND PI.ImageOrder = temp.ImageOrder
+	ORDER BY P.SKU
+GO
+
+
+EXEC spAllCategoriesAndProducts;
+
+
+----------------------------- Question 6 ---------------------------------
+DROP FUNCTION IF EXISTS fnGetSectionProducts
+GO
+
+CREATE FUNCTION fnGetSectionProducts(@categoryName VARCHAR(50))
+	RETURNS TABLE AS
+	RETURN
+		SELECT P.*, PI.ImageId
+		FROM Category C
+			 INNER JOIN CategoryProduct CP ON CP.CategoryId = C.CategoryId
+			 INNER JOIN Product P ON P.SKU = CP.SKU
+			 INNER JOIN ProductImage PI ON PI.SKU = P.SKU,
+			 (SELECT SKU, MIN(ImageOrder) AS [ImageOrder]
+			 FROM ProductImage
+			 GROUP BY SKU) AS temp
+		WHERE P.SKU = temp.SKU AND PI.ImageOrder = temp.ImageOrder AND C.CategoryId = @categoryName
+GO
+
+SELECT * FROM fnGetSectionProducts('womens clothing') ORDER BY SKU;
+
+
+----------------------------- Question 7 ---------------------------------
+DROP FUNCTION IF EXISTS fnGetProductsSearch
+GO
+
+CREATE FUNCTION fnGetProductsSearch(@search VARCHAR(100))
+	RETURNS TABLE AS
+	RETURN
+		SELECT P.*, PI.ImageId
+		FROM Category C
+			 INNER JOIN CategoryProduct CP ON CP.CategoryId = C.CategoryId
+			 INNER JOIN Product P ON P.SKU = CP.SKU
+			 INNER JOIN ProductImage PI ON PI.SKU = P.SKU,
+			 (SELECT SKU, MIN(ImageOrder) AS [ImageOrder]
+			 FROM ProductImage
+			 GROUP BY SKU) AS temp
+		WHERE P.SKU = temp.SKU AND 
+			  PI.ImageOrder = temp.ImageOrder AND 
+			  (C.CategoryId LIKE '%' + @search + '%' OR P.Title LIKE '%' + @search + '%')
+		GROUP BY P.SKU, P.Title, P.Price, P.Description, PI.ImageId
+GO
+
+SELECT * FROM fnGetProductsSearch('mens') ORDER BY SKU;
+
+
+----------------------------- Question 8 ---------------------------------
+DROP FUNCTION IF EXISTS fnGetProductDetail
+GO
+
+CREATE FUNCTION fnGetProductDetail(@sku VARCHAR(4))
+	RETURNS TABLE
+	RETURN
+		SELECT P.SKU , 
+			   P.Title , 
+			   P.Price, 
+			   P.Description AS [Product Description], 
+			   PI.ImageId AS [Image URL]
+		FROM Product P
+			 INNER JOIN ProductImage PI ON PI.SKU = P.SKU
+		WHERE P.SKU = @sku
+GO
+
+SELECT * FROM fnGetProductDetail('6247');
+
+
+----------------------------- Question 9 ---------------------------------
+DROP PROC IF EXISTS spAddToCart
+GO
+
+CREATE PROC spAddToCart(@sku VARCHAR(4), @quantity INT, @sizeId INT, @saleId INT, @customerId INT) AS
+	
+	IF  @saleId IS NULL OR @saleId NOT IN (SELECT SaleId FROM Sale)
+	BEGIN
+		INSERT INTO Sale VALUES (@customerId, NULL, NULL, NULL, NULL, NULL, NULL, NULL, GETDATE())
+
+		SET @saleId = SCOPE_IDENTITY()
+	END
+	
+	INSERT INTO SaleProduct 
+	SELECT  @saleId, @sku, @sizeId, P.Price, @quantity
+	FROM Product P
+		 LEFT JOIN ProductSize PS ON PS.SKU = P.SKU
+	WHERE P.SKU = @sku
+GO
+
+EXEC spAddToCart '1247', 3, 3, 7, 4
+
+
+----------------------------- Question 10 ---------------------------------
+DROP PROC IF EXISTS spChangePrice 
+GO
+
+CREATE PROC spChangePrice(@saleId INT) AS
+	UPDATE SaleProduct
+	SET Price = P.Price
+	FROM Product P
+		 INNER JOIN SaleProduct SP ON SP.SKU = P.SKU
+	WHERE SP.SaleId = @saleId
+GO
+
+EXEC spChangePrice 4
+
+
+----------------------------- Question 11 ---------------------------------
+DROP PROC IF EXISTS spCustomerLogin
+GO
+
+CREATE PROC spCustomerLogin(@customerId INT, @saleId INT) AS
+	-- 11.1
+	IF @saleId IS NOT NULL
+	BEGIN
+		SELECT SP.*
+		FROM Sale S
+			 INNER JOIN SaleProduct SP ON SP.SaleId = S.SaleId
+		WHERE S.SaleId = @saleId
+	END
+	ELSE
+	BEGIN
+		IF @customerId IN (SELECT CustomerId FROM Sale WHERE CustomerId = @customerId AND Confirmation IS NULL)
+		BEGIN
+			DECLARE @unpaidSaleId INT = (SELECT SaleId FROM Sale WHERE CustomerId = @customerId AND Confirmation IS NULL)
+
+			EXEC spChangePrice @unpaidSaleId
+
+			UPDATE Sale
+			SET Date = GETDATE()
+			WHERE SaleId = @unpaidSaleId
+
+			SELECT SP.*
+			FROM Sale S
+				 INNER JOIN SaleProduct SP ON SP.SaleId = S.SaleId
+			WHERE S.SaleId = @unpaidSaleId
+		END
+		ELSE
+		BEGIN
+			SELECT 'No Cart Items Found!' AS Message
+		END
+	END
+
+	-- 11.2
+	SELECT CASE 
+			WHEN BillingAddressId IS NULL THEN 'No Billing Addresses Found!'
+			ELSE CAST(BillingAddressId AS VARCHAR(10))
+			END AS [Billing Address ID]
+	FROM Sale
+	WHERE CustomerId = @customerId
+
+	-- 11.3
+	SELECT CASE 
+			WHEN ShippingAddressId IS NULL THEN 'No Shipping Addresses Found!'
+			ELSE CAST(ShippingAddressId AS VARCHAR(10))
+			END AS [Shipping Address ID]
+	FROM Sale
+	WHERE CustomerId = @customerId
+
+	-- 11.4
+	IF @customerId NOT IN (SELECT CustomerId FROM Sale WHERE CustomerId = @customerId)
+	BEGIN
+		SELECT 'No Purchases Found!'
+	END
+	ELSE
+	BEGIN
+		SELECT *
+		FROM Sale
+		WHERE CustomerId = @customerId
+	END
+GO
+
+EXEC spCustomerLogin 5, NULL
+
+
+----------------------------- Question 12 ---------------------------------
+DROP FUNCTION IF EXISTS fnReturnItems
+GO
+
+CREATE FUNCTION fnReturnItems(@saleId INT)
+	RETURNS TABLE
+	RETURN
+		SELECT SP.SaleId, SP.SKU, SP.SizeId, SP.Price, SP.Quantity, R.TranscationCode AS [Return Transaction Code], R.Date AS [Return Date]
+		FROM SaleProduct SP
+			 LEFT JOIN Returns R ON R.SaleId = SP.SaleId AND R.SKU = SP.SKU AND (R.SizeId = SP.SizeId OR (R.SizeId IS NULL AND SP.SizeId IS NULL))
+		WHERE SP.SaleId = @saleId
+GO
+
+SELECT * FROM fnReturnItems(1)
